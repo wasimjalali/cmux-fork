@@ -14,6 +14,13 @@ That is the whole point: our fork notes live here, not in `CLAUDE.md` (which ups
 - `origin` -> `https://github.com/wasimjalali/cmux-fork.git` (our fork)
 - `upstream` -> `https://github.com/manaflow-ai/cmux.git` (the real cmux)
 
+A fresh `git clone` of the fork only sets up `origin`. Add `upstream` by hand or the update loop below
+has nothing to fetch:
+
+```bash
+git remote add upstream https://github.com/manaflow-ai/cmux.git
+```
+
 ## Our custom features
 
 ### 1. Sidebar folder drag-and-drop
@@ -169,12 +176,96 @@ upstream code, so a bot review is mostly noise. The substance to check is the co
 that the feature still works, which the build + regression tests already prove. Open a PR only if you
 want the record.
 
-## Build toolchain on this machine (zig / Ghostty CLI helper)
+## Build toolchain per machine (zig / Ghostty CLI helper)
 
-The Xcode build has a "Build Ghostty CLI helper" run-script phase that needs a specific zig. Two
-gotchas hit this machine when building v0.64.19:
+The Xcode build has a "Build Ghostty CLI helper" run-script phase that needs a specific zig. The
+gotchas turned out to differ per machine, so they are split below. Read the section for the machine
+you are actually on, the two are not interchangeable.
 
-1. **Exact zig version.** The phase requires exactly `zig 0.15.2`. Homebrew here has `0.16.0`, which
+### Company MacBook Pro (Mac17,9, Apple M5 Pro) - current machine
+
+The Nature Heart company machine. macOS 26.5.2 (25F84), Xcode 26.0 (17A324), Apple Silicon.
+Set up 2026-07-26. Everything below is verified on it by building v0.64.19 Release from `main`.
+
+**Full setup from scratch.** In this order:
+
+```bash
+git clone --recursive https://github.com/wasimjalali/cmux.git
+cd cmux
+git remote add upstream https://github.com/manaflow-ai/cmux.git   # not created by the clone
+
+# zig 0.15.2, isolated. Export both: ensure-ghosttykit.sh checks `command -v zig`,
+# the Xcode run-script phase reads CMUX_ZIG.
+ZIG_FORCE_LOCAL_INSTALL=1 ZIG_INSTALL_ROOT="$HOME/.cache/cmux/zig" bash scripts/install-zig-ci.sh
+export CMUX_ZIG="$HOME/.cache/cmux/zig/zig-aarch64-macos-0.15.2/zig"
+export PATH="$HOME/.cache/cmux/zig/zig-aarch64-macos-0.15.2:$PATH"
+
+xcodebuild -downloadComponent MetalToolchain   # one time, 705 MB
+./scripts/ensure-ghosttykit.sh
+./scripts/install-git-hooks.sh
+```
+
+**Xcode has to come from `xcodes`, not the App Store.** This Mac is DEP-enrolled and MDM-managed
+through Apple Business Manager, and the Apple ID signed in to it is a Managed Apple ID. Apple blocks
+Managed Apple IDs from App Store downloads entirely, so the Xcode "Get" button is permanently greyed
+out. The `xcodesorg/made` Homebrew formula is not a way out either: it builds from source and that
+build needs Xcode's own `xcbuild`, so it cannot bootstrap. Use the prebuilt notarized `xcodes` binary
+from the project's GitHub releases instead, with a personal (non-managed) Apple ID.
+
+- `xcodes` binary lives at `~/.local/bin/xcodes`, it is not a Homebrew install
+- the Apple ID needs a free Apple Developer account that has **accepted the developer agreement**
+- Xcode installs to `/Applications/Xcode-26.0.0.app`, not `/Applications/Xcode.app`
+- then `sudo xcode-select -s /Applications/Xcode-26.0.0.app`, then `sudo xcodebuild -license accept`,
+  in that order. The license step cannot run before `xcode-select` repoints away from
+  `/Library/Developer/CommandLineTools`.
+
+If the developer agreement has not been accepted, `xcodes install` reports the download as complete
+but writes Apple's `Unauthorized` HTML page to disk *as* the `.xip`, and the unarchive step then dies
+with a `Unxip.swift` precondition failure. Sanity-check the archive size: an 84 KB `.xip` where
+~15 GB belongs is that failure, not a corrupt download. Delete it before retrying, otherwise `xcodes`
+reports "Found existing archive that will be used for installation" and reuses the error page.
+
+**The macOS 26 SDK link failure does NOT reproduce here.** The older machine needed
+`CMUX_SKIP_ZIG_BUILD=1` because zig 0.15.2 could not link libSystem against the macOS 26 SDK. Under
+Xcode 26.0 on this machine the real helper builds cleanly and the bundled `ghostty` CLI comes out as
+a real 12 MB binary rather than a stub. Do not reach for `CMUX_SKIP_ZIG_BUILD=1` here unless a build
+genuinely fails.
+
+**Xcode 26 ships the Metal toolchain as a separate component.** Without it the build fails with
+`cannot execute tool 'metal' due to missing Metal Toolchain`. One-time 705 MB download, see the
+setup block above.
+
+**A Release build needs the entitlements overridden.** `Resources/cmux.entitlements` is wired into
+the Release config only (Debug ships `CODE_SIGN_ENTITLEMENTS = ""` by design, which is why
+`reload.sh` works for everyone). It sets
+`keychain-access-groups = $(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)`, a restricted
+entitlement whose `$(AppIdentifierPrefix)` resolves to Manaflow's team `7WLXT3NR37`. We have no
+certificate for that team, so the build fails with "has entitlements that require signing with a
+development certificate". A free personal Apple Developer cert does not fix this, `com.cmuxterm.app`
+is already claimed under Manaflow's team. Override on the command line so no repo file changes:
+
+```bash
+xcodebuild -project cmux.xcodeproj -scheme cmux -configuration Release -destination 'platform=macOS' \
+  CODE_SIGN_ENTITLEMENTS="" CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" \
+  build
+```
+
+`ENABLE_HARDENED_RUNTIME` is `NO` in this project, so dropping entitlements costs nothing beyond the
+keychain access group. If cmux ever misbehaves around keychain-stored credentials, that is the cause,
+and the Debug config (`./scripts/reload.sh --tag <tag>`) is the fallback.
+
+The Release app lands in DerivedData, `reloadp.sh` launches it from there rather than installing it.
+For a real installed app, copy it across:
+
+```bash
+cp -R ~/Library/Developer/Xcode/DerivedData/cmux-*/Build/Products/Release/cmux.app /Applications/cmux.app
+```
+
+### Personal MacBook (older machine)
+
+Two gotchas hit that machine when building v0.64.19:
+
+1. **Exact zig version.** The phase requires exactly `zig 0.15.2`. Homebrew there has `0.16.0`, which
    the strict check rejects. Zig 0.15.2 is installed isolated at
    `~/.cache/cmux/zig/zig-aarch64-macos-0.15.2/zig` (Homebrew's 0.16.0 untouched). Point the build
    at it with `CMUX_ZIG`:
