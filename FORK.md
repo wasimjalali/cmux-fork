@@ -4,6 +4,8 @@ This is a personal fork of [manaflow-ai/cmux](https://github.com/manaflow-ai/cmu
 custom features that do not exist upstream. This file documents what those features are, which files
 they live in, and the exact loop to pull in a new upstream version without losing them.
 
+Agent rule overrides for this fork live in `.claude/rules/wasim-overrides.md`.
+
 Keep this file fork-only. Upstream never touches `FORK.md`, so it never causes a merge conflict.
 That is the whole point: our fork notes live here, not in `CLAUDE.md` (which upstream owns and edits).
 
