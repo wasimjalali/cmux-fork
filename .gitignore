@@ -76,3 +76,5 @@ tmux-*.log
 
 # Local pinned Release DerivedData (sidebar-folder-drop build)
 build-release/
+
+/verify/
